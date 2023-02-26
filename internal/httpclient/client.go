@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -257,17 +258,17 @@ func (h *Client) ResponseToBatch(res *http.Response) (resMsg message.Batch, err 
 		err = nil
 	}
 
-	var buffer bytes.Buffer
 	if !strings.HasPrefix(mediaType, "multipart/") {
-		var bytesRead int64
-		if bytesRead, err = buffer.ReadFrom(res.Body); err != nil {
+		var buffer bytes.Buffer
+		tee := io.TeeReader(res.Body, &buffer)
+		if _, err = io.Copy(io.Discard, tee); err != nil {
 			h.log.Errorf("Failed to read response: %v\n", err)
 			return
 		}
 
 		nextPart := message.NewPart(nil)
-		if bytesRead > 0 {
-			nextPart.SetBytes(buffer.Bytes()[:bytesRead])
+		if buffer.Len() > 0 {
+			nextPart.SetBytes(buffer.Bytes())
 		}
 
 		annotatePart(nextPart)
@@ -287,14 +288,15 @@ func (h *Client) ResponseToBatch(res *http.Response) (resMsg message.Batch, err 
 			return
 		}
 
-		var bytesRead int64
-		if bytesRead, err = buffer.ReadFrom(p); err != nil {
+		var buffer bytes.Buffer
+		tee := io.TeeReader(p, &buffer)
+		if _, err = io.Copy(io.Discard, tee); err != nil {
 			h.log.Errorf("Failed to read response: %v\n", err)
 			return
 		}
 
-		nextPart := message.NewPart(buffer.Bytes()[bufferIndex : bufferIndex+bytesRead])
-		bufferIndex += bytesRead
+		nextPart := message.NewPart(buffer.Bytes())
+		bufferIndex += int64(buffer.Len())
 
 		annotatePart(nextPart)
 		resMsg = append(resMsg, nextPart)
@@ -351,8 +353,8 @@ func (h *Client) SendToResponse(ctx context.Context, sendMsg message.Batch) (res
 		}
 	}
 
-	var req *http.Request
-	if req, err = h.reqCreator.Create(sendMsg); err != nil {
+	req, err := h.reqCreator.Create(sendMsg)
+	if err != nil {
 		logErr(err)
 		return nil, err
 	}
@@ -380,6 +382,7 @@ func (h *Client) SendToResponse(ctx context.Context, sendMsg message.Batch) (res
 			}
 			err = unexpectedErr(res)
 			if res.Body != nil {
+				io.Copy(ioutil.Discard, res.Body)
 				res.Body.Close()
 			}
 		}
@@ -416,6 +419,7 @@ func (h *Client) SendToResponse(ctx context.Context, sendMsg message.Batch) (res
 				}
 				err = unexpectedErr(res)
 				if res.Body != nil {
+					io.Copy(ioutil.Discard, res.Body)
 					res.Body.Close()
 				}
 			}
